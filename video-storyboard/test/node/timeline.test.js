@@ -129,3 +129,12 @@ test('缓存键只由摘要与源时间决定，与项目偏移无关', () => {
   assert.notEqual(frameKeyFor('D1', 1), frameKeyFor('D2', 1));
   assert.match(frameKeyFor('abc', 0), /^sha256:abc\/t0$/);
 });
+
+test('对象形式摘要（{algo,hex}）重解析后缓存键仍用 hex，不产生 [object Object]', () => {
+  const tl = new Timeline();
+  const a = tl.addTrack({ name: 'a', digest: { algo: 'sha256', hex: 'AAAA' }, duration: 10 });
+  const p = tl.addPoint(3).point;
+  tl.setOffset(a.id, 1); // 触发重解析：源时间 3 -> 2
+  assert.equal(p.frameKey, frameKeyFor('AAAA', 2));
+  assert.ok(!p.frameKey.includes('[object Object]'));
+});

@@ -6,6 +6,7 @@
 //  C. 真实连续拖动偏移（快速 input 风暴）后，帧与新的轨道/源时间一致，无旧帧残留；
 //  D. 点击分镜定位播放（player.currentTime 落到源时间）；
 //  E. PNG 接触表与 JSON 清单共用同一快照（点数/顺序/ID 一致，PNG 魔数正确）；
+//  E2. 导出进行中调整偏移：PNG/JSON 仍逐点记录冻结时版本（三者同源不变量）；
 //  F. 缓存：取帧 -> 重载页面 -> 重新选中“内容相同”的文件 -> 命中缓存
 //     (frameFromCache=true)；不选文件则无从命中；
 //  G. 强制缓存写失败不影响清单生成。
@@ -246,6 +247,31 @@ async function main() {
     check('JSON 点数 = PNG 格子数 = 快照点数（8）', exported.count === 8 && exported.manifestIds.length === 8 && exported.sheetMeta.points === 8);
     check('JSON 与快照顺序/ID 完全一致（三者同源）', exported.sameOrder);
     check('清单包含每轨偏移与每点缓存键', exported.tracksHaveOffsets.length === 2 && exported.keys.every(Boolean));
+
+    // ---------------- E2. 导出进行中调整偏移：PNG/JSON 仍属冻结时版本 ----------------
+    console.log('E2. 导出进行中调整偏移（导出三者同源不变量）');
+    const frozenCheck = await page.evaluate(async () => {
+      const app = globalThis.__app;
+      const r3 = (x) => Math.round(x * 1000) / 1000; // 清单按毫秒精度输出
+      const before = app.timeline.confirmedSnapshot().map((p) => ({ id: p.id, src: r3(p.sourceTime), key: p.frameKey }));
+      const t2 = app.tracks()[1];
+      const exportP = app.exportContactSheet({ columns: 4 }); // 不 await：导出进行中
+      app.commitOffset(t2.id, 3); // 编辑落在逐格解码/toBlob 的异步窗口内（t2 源时间整体平移）
+      const { manifest } = await exportP;
+      const after = manifest.points.map((p) => ({ id: p.id, src: p.sourceTime, key: p.frameKey }));
+      const liveNow = app.timeline.confirmedSnapshot().map((p) => p.sourceTime);
+      return {
+        same: JSON.stringify(before) === JSON.stringify(after),
+        liveChanged: liveNow.some((t, i) => t !== before[i]?.src),
+        offsets: manifest.tracks.map((t) => t.offset),
+        before: before.map((p) => p.src),
+        after: after.map((p) => p.src),
+      };
+    });
+    check('导出进行中调整偏移：清单逐点保持冻结时版本', frozenCheck.same,
+      `before=${frozenCheck.before} after=${frozenCheck.after}`);
+    check('实时数据确已改变且清单轨道偏移保持冻结值 2', frozenCheck.liveChanged && frozenCheck.offsets[1] === 2,
+      `offsets=${frozenCheck.offsets}`);
 
     // ---------------- F. 重开页面 + 重新选中相同内容 -> 缓存命中 ----------------
     console.log('F. IndexedDB 内容寻址缓存的跨会话复用');

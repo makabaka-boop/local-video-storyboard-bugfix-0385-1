@@ -1,6 +1,6 @@
 // 导出物：PNG 接触表 与 JSON 清单。
-// 两者只能接收 Timeline.confirmedSnapshot() 的同一返回值，
-// 调用方在生成期间不得再修改分镜（见 app 中的 freezeSnapshot 用法）。
+// 两者只能接收同一次 App.freezeSnapshot() 的不可变副本——
+// 生成是异步的，实时分镜数据在生成期间被编辑也不会串入本次导出。
 
 export function formatTime(sec) {
   if (!Number.isFinite(sec)) return '--:--.--';
@@ -35,7 +35,7 @@ function freeImage(im) {
 /**
  * 生成接触表。缺失帧的格子画占位框并标注“缺帧”，
  * 保证格子数量、顺序与 JSON 清单严格一致。
- * @param snapshot confirmedSnapshot() 的返回值
+ * @param snapshot freezeSnapshot() 返回的不可变分镜记录数组
  * @param tracks Map/record: trackId -> track（含 name、offset）
  * @param opts {columns, cellWidth, frameWidth}
  */

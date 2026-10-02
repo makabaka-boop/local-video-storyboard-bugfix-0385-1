@@ -1,7 +1,8 @@
 // 应用主控：导入/偏移/取帧调度/播放/导出。
 // 不变量：
-//  1) 点击播放、PNG 接触表、JSON 清单三者只能消费同一次
-//     confirmedSnapshot() 的返回值（freezeSnapshot）；
+//  1) PNG 接触表与 JSON 清单只能消费同一次 freezeSnapshot() 的
+//     不可变副本（成员、顺序、源时间、缓存键、帧全部定格在同一版
+//     已确认数据）；点击播放读取当前确认状态，未再编辑时与该快照一致；
 //  2) 取帧的竞争安全全部由 FrameExtractor 保证（令牌+换代）；
 //  3) 缓存失败只影响“帧”，Timeline 与分镜清单永远可用；
 //  4) objectURL 失效时统一经 releasePointFrame 回收。
@@ -29,6 +30,9 @@ export class App {
     this.playFile = null;       // 当前播放器载入的 {trackId, url}
     this.onDirty = null;        // 数据变化后 UI 重绘回调
     this._offsetTimers = new Map();
+    /** pointId -> {key, promise}：在途取帧。导出前据此等待收敛；
+     *  同一点同一版本的并发请求合并为一个任务。 */
+    this._inflight = new Map();
   }
 
   emit() { this.onDirty?.(); }
@@ -95,6 +99,8 @@ export class App {
     if (this.playFile?.trackId === trackId) this.playFile = null;
     this.timeline.removeTrack(trackId);
     this.emit();
+    // 其余点可能因覆盖关系换轨而被作旧，与其他编辑操作一样立即补帧
+    this.refreshStaleFrames();
   }
 
   // ---------- 偏移 ----------
@@ -158,25 +164,49 @@ export class App {
 
   // ---------- 取帧 ----------
 
-  async ensurePointFrame(point) {
+  /**
+   * 为分镜点取帧。同一点同一版本（摘要+源时间）的并发调用合并为
+   * 一个在途任务；版本不同（编辑已重解析）则另起新任务，旧任务
+   * 的迟到结果由 _isCurrentPoint 的键比对挡下。
+   */
+  ensurePointFrame(point) {
     const track = this.timeline.getTrack(point.trackId);
     const entry = this.files.get(point.trackId);
-    if (!track || !entry) return;
+    if (!track || !entry) return Promise.resolve();
 
-    point.frameKey = frameKeyFor(entry.digest.hex, point.sourceTime);
+    const key = frameKeyFor(entry.digest.hex, point.sourceTime);
+    const existing = this._inflight.get(point.id);
+    if (existing && existing.key === key) return existing.promise;
+
+    const promise = this._capturePointFrame(point, key, entry).finally(() => {
+      if (this._inflight.get(point.id)?.promise === promise) this._inflight.delete(point.id);
+    });
+    this._inflight.set(point.id, { key, promise });
+    return promise;
+  }
+
+  async _capturePointFrame(point, key, entry) {
+    // 本次取帧绑定的“已确认版本”：摘要+源时间。任何偏移/替换都会
+    // 被 _recomputePoints 同步反映到 point.frameKey，据此识别过期回调。
+    point.frameKey = key;
     point.frameStatus = 'loading';
     this.emit();
 
     // 1) 先查本地缓存：内容相同（摘要一致）+ 同一源时间才命中
     try {
-      const cached = await this.cache.get(point.frameKey);
-      if (cached && this._isCurrentPoint(point)) {
+      const cached = await this.cache.get(key);
+      if (cached && this._isCurrentPoint(point, key)) {
         this._adoptFrame(point, cached, true);
         return;
       }
     } catch {
       /* 缓存读取失败 -> 直接走提取，绝不影响清单 */
     }
+
+    // 等待缓存期间数据已被编辑（偏移/替换/删点）：本次请求作废，
+    // 由新的属主（refreshStaleFrames / 新的 ensurePointFrame）重新取帧。
+    // 不拦截的话，旧键的缓存未命中会把提取请求发到混合状态上。
+    if (!this._isCurrentPoint(point, key)) return;
 
     // 2) 实时提取（竞争安全由 extractor 保证）
     const res = await this.extractor.capture(point.id, {
@@ -185,7 +215,7 @@ export class App {
       sourceTime: point.sourceTime,
     });
 
-    if (res.status === 'stale' || !this._isCurrentPoint(point)) return;
+    if (res.status === 'stale' || !this._isCurrentPoint(point, key)) return;
     if (res.status === 'error') {
       point.frameStatus = 'error';
       this.emit();
@@ -193,13 +223,16 @@ export class App {
     }
     this._adoptFrame(point, res.blob, false);
 
-    // 3) 回填缓存；配额失败内部已吞掉
-    this.cache.put(point.frameKey, res.blob).catch(() => {});
+    // 3) 回填缓存（键与帧同属一版）；配额失败内部已吞掉
+    this.cache.put(key, res.blob).catch(() => {});
   }
 
-  _isCurrentPoint(point) {
+  /** 点仍存活、仍在取帧中、且确认版本（frameKey）与本次请求一致 */
+  _isCurrentPoint(point, key = null) {
     const live = this.timeline.points.find((p) => p.id === point.id);
-    return live === point && live.frameStatus === 'loading';
+    return live === point
+      && live.frameStatus === 'loading'
+      && (key === null || live.frameKey === key);
   }
 
   _adoptFrame(point, blob, fromCache) {
@@ -211,11 +244,24 @@ export class App {
     this.emit();
   }
 
-  /** 为所有 stale/idle/error 且当前轨道有效的点补帧（并发受控于 extractor） */
-  refreshStaleFrames() {
-    const need = this.timeline.confirmedSnapshot()
-      .filter((p) => p.frameStatus !== 'ok' && p.frameStatus !== 'loading');
-    return Promise.all(need.map((p) => this.ensurePointFrame(p)));
+  /**
+   * 让所有非 ok 的分镜点完成一次取帧尝试，并等待全部在途任务结束。
+   * 等待期间被编辑再次作旧的点会补取，最多 4 轮——连续编辑不允许
+   * 无限阻塞导出：超出的点以缺帧标注进入导出，仍属同一版已确认数据。
+   */
+  async refreshStaleFrames() {
+    for (let round = 0; round < 4; round += 1) {
+      const need = this.timeline.confirmedSnapshot().filter((p) => {
+        if (p.frameStatus === 'ok' || p.frameStatus === 'loading') return false;
+        // 首轮含 error（显式重试）；后续轮只补“等待期间被作旧”的点，
+        // 持续失败的点不反复重试，保证导出能终止。
+        return round === 0 || p.frameStatus !== 'error';
+      });
+      const started = need.map((p) => this.ensurePointFrame(p));
+      const pending = [...new Set([...this._inflight.values()].map((x) => x.promise))];
+      if (!started.length && !pending.length) return;
+      await Promise.all([...started, ...pending]);
+    }
   }
 
   // ---------- 播放 ----------
@@ -234,13 +280,27 @@ export class App {
 
   /**
    * 冻结当前已确认分镜点：PNG 与 JSON 共用这次快照与同一 tracks 视图。
-   * “冻结”的是成员集合与顺序（拷贝数组）；点对象仍引用实时实例，
-   * 导出期间新完成的帧可以被接触表读到，但增/删/移动分镜点
-   * 不会改变本次导出的数组——点击播放也必须传入同一快照中的点。
+   * “冻结”的是成员、顺序与全部展示数据：每个点被拷贝为不可变记录
+   * （帧 Blob 本身不可变，安全共享引用）。导出是异步的（逐格解码 +
+   * toBlob），期间发生的偏移调整、文件替换、在途取帧完成都只作用于
+   * 实时实例，绝不会再改变本次导出的任何一格/任何一行——
+   * 接触表格子数/顺序/编号 = 清单 points[].index，且两者内容同版。
    */
   freezeSnapshot() {
-    const snapshot = this.timeline.confirmedSnapshot();
-    const tracks = new Map(this.timeline.tracks.map((t) => [t.id, { ...t }]));
+    const snapshot = this.timeline.confirmedSnapshot().map((p) => Object.freeze({
+      id: p.id,
+      projectTime: p.projectTime,
+      trackId: p.trackId,
+      sourceTime: p.sourceTime,
+      frameStatus: p.frameStatus,
+      frame: p.frame ?? null,        // Blob 不可变
+      frameKey: p.frameKey ?? null,
+      frameFromCache: !!p.frameFromCache,
+    }));
+    const tracks = new Map(this.timeline.tracks.map((t) => [t.id, Object.freeze({
+      ...t,
+      digest: t.digest ? Object.freeze({ ...t.digest }) : t.digest,
+    })]));
     return { snapshot, tracks };
   }
 
@@ -256,7 +316,7 @@ export class App {
     return buildManifest(snapshot, tracks, null);
   }
 
-  /** 一键：先确保所有点都已尝试取帧，再用同一冻结快照产出 PNG+JSON */
+  /** 一键：先收敛（补取缺帧 + 等在途任务结束），再用同一冻结快照产出 PNG+JSON */
   async exportAll(opts = {}) {
     await this.refreshStaleFrames();
     const { snapshot, tracks } = this.freezeSnapshot();

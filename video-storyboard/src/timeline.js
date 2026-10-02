@@ -212,7 +212,8 @@ export class Timeline {
         this._invalidate(p, null);
         continue;
       }
-      const key = r.track.digest ? frameKeyFor(r.track.digest, r.sourceTime) : null;
+      const hex = digestHexOf(r.track);
+      const key = hex ? frameKeyFor(hex, r.sourceTime) : null;
       if (p.trackId !== r.track.id || Math.abs((p.sourceTime ?? NaN) - r.sourceTime) > EPS) {
         p.trackId = r.track.id;
         p.sourceTime = r.sourceTime;
@@ -247,4 +248,11 @@ export class Timeline {
 export function frameKeyFor(digest, sourceTime) {
   const ms = Math.max(0, Math.round(sourceTime * 1000));
   return `sha256:${digest}/t${ms}`;
+}
+
+/** 轨道摘要统一取 hex 字符串（应用层存 {algo,hex}，测试可存裸字符串） */
+function digestHexOf(track) {
+  const d = track?.digest;
+  if (!d) return null;
+  return typeof d === 'string' ? d : d.hex ?? null;
 }

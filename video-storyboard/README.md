@@ -32,8 +32,8 @@ src/
   app.js        主控：导入/替换/偏移/取帧调度/播放/导出，维护三者同源不变量
 test/
   fakes.js      可控媒体假件（manual/auto 两种回调派发），Node 与页面共用
-  node/         31 个 node:test 单测（时间轴/竞争/缓存/摘要/导出）
-  browser/e2e.js 真实 Chromium 端到端（21 项检查，见下）
+  node/         37 个 node:test 单测（时间轴/竞争/缓存/摘要/导出/导出一致性）
+  browser/e2e.js 真实 Chromium 端到端（23 项检查，见下）
 samples/        clip-a.webm (4s) / clip-b.webm (3s)，画面带秒号与时间变色
 scripts/        make-samples.js（用 Chromium MediaRecorder 录制样本）、server.js
 ```
@@ -71,16 +71,21 @@ scripts/        make-samples.js（用 Chromium MediaRecorder 录制样本）、s
 ## 三者同源
 
 `Timeline.confirmedSnapshot()` 返回唯一有序分镜数组；`App.freezeSnapshot()`
-在导出时冻结其成员与顺序，`buildContactSheet` 与 `buildManifest` 接收同一个数组
-（接触表格子数/顺序/编号 = 清单 `points[].index`）。播放定位 `locatePlayback`
-也只从该快照取点。缺帧点在 PNG 中保留占位格并在清单中标注 `frameReady:false`。
+在导出时把每个分镜点**拷贝为不可变记录**（成员、顺序、轨道、源时间、
+缓存键、帧 Blob 引用全部定格在同一版已确认数据），`buildContactSheet` 与
+`buildManifest` 只消费这次冻结（接触表格子数/顺序/编号 = 清单 `points[].index`）。
+导出是异步的：导出过程中的偏移调整、替换文件、在途取帧完成都只作用于实时
+实例，**不会串入本次 PNG 或 JSON**；`exportAll` 先收敛（补取缺帧并等待全部
+在途取帧结束，有界轮次防止连续编辑阻塞）再冻结。播放定位 `locatePlayback`
+读取当前确认状态，未再编辑时与导出快照一致。缺帧/被取消的点在 PNG 中保留
+占位格并在清单中标注 `frameReady:false`。
 
 ## 测试
 
 ```bash
-npm test          # 31 个 Node 单测（含可控媒体竞争次序、LRU、配额失败）
+npm test          # 37 个 Node 单测（含可控媒体竞争次序、LRU、配额失败、导出一致性）
 npm run make-samples   # 用 Chromium 录制短视频样本（已附带生成好的 samples/）
-npm run test:e2e  # 真实 Chromium：实际取帧/播放/导出/缓存跨会话/配额隔离
+npm run test:e2e  # 真实 Chromium：实际取帧/播放/导出/导出中编辑/缓存跨会话/配额隔离
 npm run test:all  # 以上全部
 ```
 

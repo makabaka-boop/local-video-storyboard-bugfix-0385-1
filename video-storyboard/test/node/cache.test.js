@@ -72,7 +72,8 @@ test('配额失败：put 不抛错，随后 get 从内存降级层取回', async
       failures += 1;
       const err = new DOMException('Quota exceeded.', 'QuotaExceededError');
       setTimeout(() => {
-        Object.defineProperty(req, 'error', { value: err, configurable: true });
+        // 必须 writable：fake-indexeddb 事务循环会对每个请求重新赋值 error
+        Object.defineProperty(req, 'error', { value: err, configurable: true, writable: true });
         if (typeof req.onerror === 'function') req.onerror({ target: req });
         const tx = req.transaction;
         if (tx && typeof tx.onabort === 'function') tx.onabort({ target: tx });
