@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>多视频统一时间轴 · 分镜工具</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>多视频统一时间轴 · 分镜工具</h1>
+    <div class="actions">
+      <label class="btn primary">
+        导入 2～3 段视频
+        <input id="fileInput" type="file" accept="video/*" multiple hidden />
+      </label>
+      <button id="btnUniform" class="btn" title="在整条项目时间轴上均匀生成分镜点">均匀取点</button>
+      <input id="uniformN" type="number" min="1" max="30" value="12" class="num" title="均匀分镜点数量" />
+      <button id="btnRefresh" class="btn">补齐缺帧</button>
+      <button id="btnExport" class="btn success">导出 PNG + JSON</button>
+      <button id="btnJson" class="btn">仅 JSON</button>
+      <button id="btnClear" class="btn danger" title="取消全部取帧并清空分镜点">清空分镜</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="col-tracks">
+      <h2>轨道与偏移</h2>
+      <div id="trackList" class="track-list">
+        <p class="hint">尚未导入视频。每个轨道可设置相对项目时间起点的偏移（秒）。</p>
+      </div>
+      <div class="cache-box">
+        <h3>本地缩略帧缓存</h3>
+        <p id="cacheInfo" class="hint">计算中…</p>
+        <div class="row">
+          <button id="btnCacheRefresh" class="btn small">刷新统计</button>
+          <button id="btnCacheClear" class="btn small danger">清空缓存</button>
+        </div>
+        <p class="hint">键 = 文件内容摘要(SHA-256) + 源时间(ms)。重开页面后，只有重新选中内容相同的视频才能复用；配额不足时自动降级，不影响分镜清单。</p>
+      </div>
+    </section>
+
+    <section class="col-main">
+      <div class="player-wrap">
+        <video id="player" controls muted playsinline preload="auto"></video>
+        <div id="playerHint" class="player-hint">点击任一分镜缩略图即可定位播放</div>
+      </div>
+
+      <h2>统一时间轴（点击标尺添加分镜点，≤ <span id="maxN">30</span> 个）</h2>
+      <div class="ruler-wrap">
+        <canvas id="ruler" height="150"></canvas>
+      </div>
+      <p id="rulerMeta" class="hint"></p>
+
+      <h2>分镜点（同一组已确认时间点驱动播放 / PNG / JSON）</h2>
+      <div id="pointGrid" class="point-grid"></div>
+      <p id="pointStatus" class="hint"></p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- 竞争次序测试页（可控媒体回调） -->
+  <section class="race-test">
+    <details>
+      <summary>竞争次序测试（可控媒体回调，不使用真实视频）</summary>
+      <div class="race-body">
+        <p class="hint">
+          这里使用与 Node 单测相同的“可控假媒体”：可手动决定每个
+          loadedmetadata / seeked 回调何时到达，用于验证连续拖动、替换文件、取消时
+          旧请求的帧不会占据新分镜。
+        </p>
+        <div class="row">
+          <button id="raceRapid" class="btn small">连续拖动（10 次快速取帧）</button>
+          <button id="raceReplace" class="btn small">取帧中途替换文件</button>
+          <button id="raceCancel" class="btn small">全部取消</button>
+          <button id="raceOutOfOrder" class="btn small">手动乱序：旧回调晚到</button>
+        </div>
+        <pre id="raceLog" class="race-log"></pre>
+      </div>
+    </details>
+  </section>
+
+  <script type="module" src="src/ui.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "name": "video-storyboard",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.html",
+  "scripts": {
+    "test": "node --test test/node/",
+    "test:e2e": "node test/browser/e2e.js",
+    "make-samples": "node scripts/make-samples.js",
+    "serve": "node scripts/server.js",
+    "test:all": "node --test test/node/ && node test/browser/e2e.js"
+  },
+  "keywords": [
+    "video",
+    "storyboard",
+    "contact-sheet",
+    "thumbnail",
+    "indexeddb-cache"
+  ],
+  "author": "",
+  "license": "ISC",
+  "description": "多视频统一时间轴分镜工具：取帧竞争安全、本地有界缓存、PNG 接触表与 JSON 清单",
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
+    "playwright": "^1.63.0"
+  }
+}
